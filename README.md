@@ -1,0 +1,1 @@
+# snap-mcp-plugin
