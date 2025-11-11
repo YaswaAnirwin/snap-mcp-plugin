@@ -1,0 +1,123 @@
+{
+  "name": "snap-code-plugin",
+  "displayName": "MCP Manager",
+  "description": "Simplifies MCP server management with Azure DevOps and Figma integration via GitHub Copilot Chat",
+  "version": "0.0.2",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Chat",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "snap-code-plugin.setupMCP",
+        "title": "MCP: Setup Servers"
+      },
+      {
+        "command": "snap-code-plugin.showMCPStatus",
+        "title": "MCP: Show Status"
+      },
+      {
+        "command": "snap-code-plugin.disconnectMCP",
+        "title": "MCP: Disconnect All Servers"
+      },
+      {
+        "command": "snap-code-plugin.configureMCP",
+        "title": "MCP: Configure Credentials"
+      },
+      {
+        "command": "snap-code-plugin.configureNativeIntegration",
+        "title": "Snap: Configure Native Copilot Integration"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "snap-code-plugin.snap",
+        "fullName": "Snap Code Assistant",
+        "name": "snap",
+        "description": "Enhanced Copilot with custom context from files, folders, and MCP servers",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "azure",
+            "description": "Query Azure DevOps work items, pull requests, and repositories"
+          },
+          {
+            "name": "figma",
+            "description": "Query Figma designs, components, and files"
+          },
+          {
+            "name": "status",
+            "description": "Show status of all connected MCP servers"
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "MCP Manager",
+      "properties": {
+        "mcpManager.azureDevOps.pat": {
+          "type": "string",
+          "default": "",
+          "description": "Azure DevOps Personal Access Token",
+          "scope": "application"
+        },
+        "mcpManager.figma.accessToken": {
+          "type": "string",
+          "default": "",
+          "description": "Figma Access Token",
+          "scope": "application"
+        },
+        "mcpManager.azureDevOps.organization": {
+          "type": "string",
+          "default": "",
+          "description": "Azure DevOps Organization URL",
+          "scope": "application"
+        },
+        "mcpManager.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to MCP servers on startup"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.105.0",
+    "@typescript-eslint/eslint-plugin": "^8.45.0",
+    "@typescript-eslint/parser": "^8.45.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.10",
+    "eslint": "^9.36.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "dotenv": "^17.2.3"
+  }
+}

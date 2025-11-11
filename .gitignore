@@ -1,0 +1,41 @@
+# Node modules
+node_modules/
+dist/
+out/
+.vscode-test/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+
+# Build artifacts
+*.vsix
+*.log
+*.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# System files
+.DS_Store
+Thumbs.db
+
+# TypeScript build cache
+*.tsbuildinfo
+
+# VSCode local config
+.vscode/
+!.vscode/mcp.json   # keep MCP config if needed
+
+# Backup or temp files
+*.bak
+*.tmp
+*.swp
+*.zip
+
+# Python virtual envs or scripts (if any)
+__pycache__/
+venv/
+*.pyc
