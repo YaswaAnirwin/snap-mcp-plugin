@@ -1,8 +1,10 @@
 {
   "name": "snap-code-plugin",
-  "displayName": "MCP Manager",
-  "description": "Simplifies MCP server management with Azure DevOps and Figma integration via GitHub Copilot Chat",
+  "displayName": "Snap Code Plugin (MCP Manager)",
+  "description": "Auto-connects to Azure DevOps and Figma MCP servers, fetches PBIs, and generates React/Python code via Copilot Chat.",
   "version": "0.0.2",
+  "publisher": "snap",
+  "type": "module",
   "engines": {
     "vscode": "^1.105.0"
   },
@@ -11,7 +13,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onChatParticipant:snap-code-plugin.snap"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -40,9 +43,8 @@
     "chatParticipants": [
       {
         "id": "snap-code-plugin.snap",
-        "fullName": "Snap Code Assistant",
         "name": "snap",
-        "description": "Enhanced Copilot with custom context from files, folders, and MCP servers",
+        "description": "Enhanced Copilot that fetches Azure DevOps PBIs, analyzes Figma links, and generates production-ready code automatically.",
         "isSticky": true,
         "commands": [
           {
@@ -69,16 +71,16 @@
           "description": "Azure DevOps Personal Access Token",
           "scope": "application"
         },
-        "mcpManager.figma.accessToken": {
-          "type": "string",
-          "default": "",
-          "description": "Figma Access Token",
-          "scope": "application"
-        },
         "mcpManager.azureDevOps.organization": {
           "type": "string",
           "default": "",
           "description": "Azure DevOps Organization URL",
+          "scope": "application"
+        },
+        "mcpManager.figma.accessToken": {
+          "type": "string",
+          "default": "",
+          "description": "Figma Access Token",
           "scope": "application"
         },
         "mcpManager.autoConnect": {
@@ -91,19 +93,21 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile": "npm run check-types && npm run lint && node esbuild.cjs",
     "watch": "npm-run-all -p watch:*",
-    "watch:esbuild": "node esbuild.js --watch",
+    "watch:esbuild": "node esbuild.cjs --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "npm run check-types && npm run lint && node esbuild.cjs --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "instructions-mcp": "node ./mcp/instructions-mcp.js"
   },
   "devDependencies": {
+    "@types/dotenv": "^6.1.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/vscode": "^1.105.0",
@@ -117,7 +121,9 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.20.0",
-    "dotenv": "^17.2.3"
+    "@cfworker/json-schema": "^4.1.1",
+    "@modelcontextprotocol/sdk": "^1.21.1",
+    "dotenv": "^17.2.3",
+    "node-fetch": "^3.3.2"
   }
 }

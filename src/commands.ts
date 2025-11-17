@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { MCPManager, MCPServerConfig } from './mcpManager';
+import { MCPManager, MCPServerConfig } from './mcpManager.js';
 import * as path from 'path';
 import * as os from 'os';
 

@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
-import { MCPManager } from "./mcpManager";
+import { MCPManager } from "./mcpManager.js";
 import * as path from "path";
-import { spawn } from "child_process";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
 
@@ -15,11 +14,10 @@ console.log("✅ Loaded env:", {
 });
 
 /* ---------------------------------------------------------
-   🧠 Load All Markdown Files from /context
+   🧠 Load Markdown Context
 --------------------------------------------------------- */
 const contextDir = path.join(__dirname, "../context");
 let combinedContext = "";
-
 try {
   const contextFiles = fs.readdirSync(contextDir).filter((f) => f.endsWith(".md"));
   for (const file of contextFiles) {
@@ -33,101 +31,62 @@ try {
 }
 
 /* ---------------------------------------------------------
-   🔧 Helper: Safe Copilot Model Selection
+   🧠 Copilot Model Helper
 --------------------------------------------------------- */
 async function getCopilotModel(): Promise<vscode.LanguageModelChat | null> {
   try {
     if (!vscode.lm) {
-      console.warn("⚠️ vscode.lm is undefined — Copilot Chat not initialized");
+      vscode.window.showErrorMessage("❌ Copilot Chat API not available.");
       return null;
     }
 
-    try {
-      const gpt4 = await vscode.lm.selectChatModels({
-        vendor: "github",
-        family: "copilot-gpt4",
-      });
-      if (gpt4.length > 0) {
-        console.log("🧠 Using GitHub Copilot GPT-4 model.");
-        return gpt4[0];
-      }
-    } catch (err) {
-      console.warn("⚠️ Copilot GPT-4 unavailable:", err);
-    }
+    const gpt4 = await vscode.lm.selectChatModels({ vendor: "github", family: "copilot-gpt4" });
+    if (gpt4.length > 0) {return gpt4[0];}
 
-    const copilot = await vscode.lm.selectChatModels({
-      vendor: "github",
-      family: "copilot",
-    });
-    if (copilot.length > 0) {
-      console.log("💡 Using standard GitHub Copilot model.");
-      return copilot[0];
-    }
+    const fallback = await vscode.lm.selectChatModels({ vendor: "github", family: "copilot" });
+    if (fallback.length > 0) {return fallback[0];}
 
-    console.error("❌ No supported Copilot model found.");
+    vscode.window.showErrorMessage("❌ No Copilot model found.");
     return null;
   } catch (err) {
-    console.error("❌ Model selection failed:", err);
+    console.error("❌ Error selecting Copilot model:", err);
     return null;
   }
 }
 
 /* ---------------------------------------------------------
-   🧩 Helper: Azure DevOps API Client
+   🧩 Azure DevOps Fetch
 --------------------------------------------------------- */
-async function fetchAzureDevOpsData(endpoint: string) {
-  const orgUrl = process.env.AZURE_ORG_URL;
+async function fetchAzureDevOpsDataFromUrl(pbiUrl: string) {
   const pat = process.env.AZURE_DEVOPS_PAT;
-  if (!orgUrl || !pat) throw new Error("Missing AZURE_ORG_URL or AZURE_DEVOPS_PAT in .env");
-
-  const url = `${orgUrl}/${endpoint}?api-version=7.0`;
+  if (!pat) {throw new Error("Missing Azure DevOps PAT");}
   const headers = {
     Authorization: `Basic ${Buffer.from(":" + pat).toString("base64")}`,
     "Content-Type": "application/json",
   };
-
-  const response = await fetch(url, { headers });
-  if (!response.ok)
-    throw new Error(`Azure DevOps API Error: ${response.status} ${response.statusText}`);
+  const response = await fetch(pbiUrl + "?api-version=7.0", { headers });
+  if (!response.ok) {throw new Error(`Azure DevOps Error: ${response.status} ${response.statusText}`);}
   return await response.json();
 }
 
 /* ---------------------------------------------------------
-   🧠 Helpers for new PBI-based logic
+   🧩 Helper
 --------------------------------------------------------- */
 function hasFigmaLink(text: string): boolean {
-  const figmaRegex = /https?:\/\/(?:www\.)?figma\.com\/(?:file|proto)\/[^\s)]+/gi;
-  return figmaRegex.test(text);
-}
-
-async function readCopilotInstructions(): Promise<string> {
-  try {
-    const filePath = path.join(__dirname, "../context/copilot-instructions.md");
-    return fs.readFileSync(filePath, "utf-8");
-  } catch {
-    return "(No copilot-instructions.md found)";
-  }
+  return /https?:\/\/(?:www\.)?figma\.com\/(?:file|proto)\/[^\s)]+/i.test(text);
 }
 
 /* ---------------------------------------------------------
-   🧩 Safe MCP Tool Invocation Helper
+   🧩 Safe MCP Invocation
 --------------------------------------------------------- */
-async function invokeMCP(tool: string, args: any): Promise<any> {
+async function callMCP(manager: MCPManager, name: string, tool: string, args: any) {
   try {
-    const lm: any = vscode.lm; // cast to any to avoid type restriction
-    const result = await lm.invokeTool(tool, args);
-    return result;
+    return await manager.callTool(name, tool, args);
   } catch (err) {
-    console.error(`❌ MCP tool ${tool} failed:`, err);
-    return {};
+    console.error(`❌ MCP tool ${name}.${tool} failed:`, err);
+    return null;
   }
 }
-
-/* ---------------------------------------------------------
-   🧠 State Memory
---------------------------------------------------------- */
-let lastFetchedImage: string | null = null;
-let lastFetchedComponent: string | null = null;
 
 /* ---------------------------------------------------------
    🧩 Main Chat Participant
@@ -141,272 +100,116 @@ export function registerCustomChatParticipant(
       const prompt = request.prompt.toLowerCase();
 
       /* =======================================================
-         🔍 NEW FEATURE — PBI LINK DETECTION AND HANDLING
+         🔍 1️⃣ PBI LINK DETECTION
       ======================================================= */
-      if (prompt.includes("pbi link") || prompt.match(/https?:\/\/dev\.azure\.com\/[^\s)]+/i)) {
+      if (prompt.match(/https?:\/\/dev\.azure\.com\/[^\s)]+/i)) {
         stream.progress("🔗 Processing PBI link...");
 
-        const pbiUrlMatch = request.prompt.match(/https?:\/\/dev\.azure\.com\/[^\s)]+/i);
-        const pbiUrl = pbiUrlMatch ? pbiUrlMatch[0] : null;
-        if (!pbiUrl) {
+        const match = request.prompt.match(/https?:\/\/dev\.azure\.com\/[^\s)]+/i);
+        if (!match) {
           stream.markdown("⚠️ No valid PBI URL detected.");
           return;
         }
 
-        const model = await getCopilotModel();
-        if (!model) {
-          stream.markdown("⚠️ Copilot model unavailable.");
-          return;
+        let apiUrl = match[0];
+        const idMatch = apiUrl.match(/_workitems\/edit\/(\d+)/);
+        if (idMatch) {
+          apiUrl = `${process.env.AZURE_ORG_URL}/SnapCode/_apis/wit/workitems/${idMatch[1]}`;
         }
 
-        // 1️⃣ Use ADO MCP to fetch PBI data
-        stream.progress("🧾 Fetching PBI details from Azure DevOps...");
-        const adoResult: any = await invokeMCP("ado.getPBIInfo", { url: pbiUrl });
-        const { description, acceptanceCriteria, instructions } = adoResult ?? {};
+        const adoData: any = await fetchAzureDevOpsDataFromUrl(apiUrl);
+        const desc = adoData?.fields?.["System.Description"] ?? "";
+        const ac = adoData?.fields?.["Microsoft.VSTS.Common.AcceptanceCriteria"] ?? "";
+        const pbiText = [desc, ac].filter(Boolean).join("\n\n");
 
-        const pbiText = [description, acceptanceCriteria, instructions]
-          .filter(Boolean)
-          .join("\n\n");
-
-        // 2️⃣ Detect Figma link
-        const isFigma = hasFigmaLink(pbiText);
-        stream.markdown(isFigma ? "🎨 Figma link detected!" : "🧾 Non-Figma PBI detected.");
-
-        let finalPrompt = "";
-
-        if (isFigma) {
-          const figmaUrl = pbiText.match(/https?:\/\/(?:www\.)?figma\.com\/[^\s)]+/i)?.[0] ?? "";
-          const figmaResponse: any = await invokeMCP("Framelink Figma MCP.getImage", {
-            url: figmaUrl,
-          });
-          const figmaImage = figmaResponse?.image || "(No image found)";
-          const copilotInstructions = await readCopilotInstructions();
-
-          finalPrompt = `
-The following PBI includes a Figma design link. Analyze the design and Acceptance Criteria to generate code.
-
-🔹 **PBI Details:**
-${pbiText}
-
-🔹 **Figma Preview:**
-${figmaImage}
-
-🔹 **Guidelines (copilot-instructions.md):**
-${copilotInstructions}
-`;
-        } else {
-          finalPrompt = `
-This PBI does not include any Figma link.
-Use only the Acceptance Criteria and Description to generate the code.
-
-🔹 **PBI Details:**
-${pbiText}
-`;
-        }
-
-        const response = await model.sendRequest(
-          [vscode.LanguageModelChatMessage.User(finalPrompt)],
-          {},
-          token
-        );
-
-        let generated = "";
-        for await (const part of response.text) generated += part;
-        stream.markdown("### 🧩 Generated Code\n```ts\n" + generated.trim() + "\n```");
-        return;
-      }
-
-      /* =======================================================
-         🧱 STEP 0 — AZURE DEVOPS INTEGRATION
-      ======================================================= */
-      if (prompt.includes("azure devops") || prompt.includes("ado")) {
-        stream.progress("🔄 Connecting to Azure DevOps API...");
-        try {
-          if (prompt.includes("repository") || prompt.includes("repositories")) {
-            const data = await fetchAzureDevOpsData("_apis/git/repositories");
-            stream.markdown(
-              "### 📦 Repositories\n```json\n" + JSON.stringify(data, null, 2) + "\n```"
-            );
-          } else if (prompt.includes("project") || prompt.includes("projects")) {
-            const data = await fetchAzureDevOpsData("_apis/projects");
-            stream.markdown(
-              "### 🏗️ Projects\n```json\n" + JSON.stringify(data, null, 2) + "\n```"
-            );
-          } else if (prompt.includes("work item")) {
-            const match = prompt.match(/work item (\d+)/);
-            if (match) {
-              const id = match[1];
-              const data = await fetchAzureDevOpsData(`_apis/wit/workitems/${id}`);
-              stream.markdown(
-                "### 🧾 Work Item Details\n```json\n" + JSON.stringify(data, null, 2) + "\n```"
-              );
-            } else {
-              stream.markdown(
-                "⚠️ Please specify a work item ID (e.g., 'get work item 12345')."
-              );
-            }
-          } else {
-            stream.markdown(
-              "⚠️ Supported Azure DevOps commands:\n- list repositories\n- list projects\n- get work item <id>"
-            );
-          }
-        } catch (err) {
-          stream.markdown(`❌ Error fetching from Azure DevOps API:\n\n\`\`\`\n${err}\n\`\`\``);
-        }
-        return;
-      }
-
-      /* =======================================================
-         🎨 STEP 1 — FETCH FIGMA DESIGN IMAGE
-      ======================================================= */
-      if (prompt.includes("fetch figma design")) {
-        stream.progress("🎨 Fetching design preview from Figma...");
-        const fileKey =
-          process.env.FIGMA_FILE_KEY ||
-          prompt.match(/figma\.com\/file\/([a-zA-Z0-9]+)/)?.[1];
-        if (!fileKey) {
-          stream.markdown("⚠️ FIGMA_FILE_KEY missing in .env or command.");
-          return;
-        }
-
-        const scriptPath = path.join(context.extensionPath, "scripts", "figma_to_react.py");
-        const designData = { file_key: fileKey, query: request.prompt };
-        const py = spawn("python", [scriptPath], {
-          cwd: context.extensionPath,
-          env: { ...process.env },
+        // 🧠 2️⃣ Run instructions-mcp to decide plan
+        stream.progress("🧠 Analyzing PBI type via instructions-mcp...");
+        const planRes = await callMCP(mcpManager, "instructions-mcp", "prepareExecutionPlan", {
+          pbiText,
         });
+        const plan = planRes?.content?.[0]?.data;
 
-        let output = "",
-          errorOutput = "";
-        py.stdin.write(JSON.stringify(designData));
-        py.stdin.end();
-        py.stdout.on("data", (d: Buffer) => (output += d.toString()));
-        py.stderr.on("data", (d: Buffer) => (errorOutput += d.toString()));
-        await new Promise<void>((r) => py.on("close", () => r()));
-
-        if (errorOutput) {
-          stream.markdown(`❌ Python Error:\n\n\`\`\`\n${errorOutput}\n\`\`\``);
-          return;
-        }
-        if (!output.trim()) {
-          stream.markdown("⚠️ No output received from Figma script.");
+        if (!plan?.instructionsLoaded) {
+          stream.markdown("❌ Could not load copilot instructions. Please fix context folder.");
           return;
         }
 
-        let parsed: any;
-        try {
-          parsed = JSON.parse(output.trim());
-        } catch {
-          stream.markdown("⚠️ Failed to parse Python output.");
-          return;
+        const { runFigmaMCP, runNonFigmaMCP, mergedPrompt } = plan;
+
+        // 🧩 3️⃣ Optionally enrich via figma/non-figma MCPs
+        let enrichedPrompt = mergedPrompt;
+        if (runFigmaMCP) {
+          stream.progress("🎨 Loading Figma MCP context...");
+          const figmaUrl = pbiText.match(/https?:\/\/(?:www\.)?figma\.com\/[^\s)]+/i)?.[0] ?? "";
+          const res = await callMCP(mcpManager, "figma-instructions-mcp", "processFigmaPBI", {
+            figmaUrl,
+            pbiText,
+          });
+          enrichedPrompt += "\n\n" + (res?.output ?? "");
+        } else if (runNonFigmaMCP) {
+          stream.progress("📄 Loading Non-Figma MCP context...");
+          const res = await callMCP(mcpManager, "nonfigma-instructions-mcp", "processNonFigmaPBI", {
+            pbiText,
+          });
+          enrichedPrompt += "\n\n" + (res?.output ?? "");
         }
 
-        if (!parsed.found) {
-          const available = parsed.available
-            ? parsed.available.map((n: string) => `- ${n}`).join("\n")
-            : "No components found.";
-          stream.markdown(`⚠️ ${parsed.message}\n\n**Available components:**\n${available}`);
-          return;
-        }
-
-        const imageUrl = parsed.image_url;
-        const componentName = parsed.component;
-        if (!imageUrl) {
-          stream.markdown(`⚠️ No image found for ${componentName}`);
-          return;
-        }
-
-        lastFetchedImage = imageUrl;
-        lastFetchedComponent = componentName;
-
-        try {
-          const res = await fetch(imageUrl);
-          const arrayBuffer = await res.arrayBuffer();
-          const imgDir = path.join(context.extensionPath, "preview_images");
-          if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir);
-          const localPath = path.join(
-            imgDir,
-            `${componentName.replace(/\s+/g, "_")}.png`
-          );
-          fs.writeFileSync(localPath, Buffer.from(arrayBuffer));
-          stream.markdown(
-            `🧩 **Figma Component:** ${componentName}\n![Preview](${imageUrl})\n\n✅ Image saved at:\n\`${localPath}\`\n\nRun:\n\`@snap generate react code for that image\``
-          );
-        } catch {
-          stream.markdown(
-            `🧩 **Figma Component:** ${componentName}\n![Preview](${imageUrl})\n\n⚠️ Could not save image locally.`
-          );
-        }
-        return;
-      }
-
-      /* =======================================================
-         ⚙️ STEP 2 — GENERATE REACT CODE FROM IMAGE
-      ======================================================= */
-      if (
-        prompt.includes("generate react code") &&
-        (lastFetchedImage || prompt.includes(".png") || prompt.includes("http"))
-      ) {
-        stream.progress("🤖 Generating React code from image...");
-        const urlMatch = request.prompt.match(/https?:\/\/\S+\.png/);
-        const localMatch = request.prompt.match(/([A-Za-z0-9_:\\\/.-]+\.png)/);
-        const imageSource =
-          urlMatch?.[0] || localMatch?.[0] || lastFetchedImage || "";
-        if (!imageSource) {
-          stream.markdown("⚠️ No image provided or fetched previously.");
-          return;
-        }
-
-        const componentName = lastFetchedComponent || "GeneratedComponent";
+        // 🧩 4️⃣ Send merged plan to Copilot
         const model = await getCopilotModel();
         if (!model) {
           stream.markdown("⚠️ No Copilot model available.");
           return;
         }
 
-        const promptMsg = `
-${combinedContext}
-
-You are a professional React developer.
-Below is a UI screenshot: ${imageSource}
-Describe and infer its structure, then generate production-ready React (JSX + TailwindCSS).
-Use functional components, semantic HTML, and realistic placeholder text.
-`;
-        const messages = [vscode.LanguageModelChatMessage.User(promptMsg)];
-        const response = await model.sendRequest(messages, {}, token);
-        let generated = "";
-        for await (const part of response.text) generated += part;
-
-        stream.markdown(
-          `### 🧩 Generated React Code for ${componentName}\n\`\`\`jsx\n${generated.trim()}\n\`\`\`\n✅ Code generation complete!`
+        stream.progress("🤖 Generating code via Copilot...");
+        const response = await model.sendRequest(
+          [vscode.LanguageModelChatMessage.User(enrichedPrompt)],
+          {},
+          token
         );
-        try {
-          const workspaceFolders = vscode.workspace.workspaceFolders;
-          if (workspaceFolders && workspaceFolders.length > 0) {
-            const savePath = vscode.Uri.joinPath(
-              workspaceFolders[0].uri,
-              `${componentName.replace(/\s+/g, "_")}.jsx`
-            );
-            await vscode.workspace.fs.writeFile(
-              savePath,
-              Buffer.from(generated.trim(), "utf8")
-            );
-            stream.markdown(`💾 Saved at: **${savePath.fsPath}**`);
-          }
-        } catch (err) {
-          console.warn("⚠️ Could not save JSX file:", err);
+
+        let generated = "";
+        for await (const part of response.text) {generated += part;}
+
+        if (generated.trim()) {
+          stream.markdown("### 🧩 Generated Code\n```tsx\n" + generated.trim() + "\n```");
+        } else {
+          stream.markdown("⚠️ No code generated. Try refining the PBI or context.");
         }
+
         return;
       }
 
       /* =======================================================
-         🪄 FALLBACK — NORMAL COPILOT TEXT HANDLING
+         🧱 5️⃣ MANUAL ADO COMMANDS
       ======================================================= */
-      stream.progress("Processing with Copilot fallback...");
-      await processWithCopilot(request, request.prompt, stream, token, chatContext);
-    } catch (error) {
-      console.error("❌ Chat participant error:", error);
-      stream.markdown(`Error: ${error}`);
+      if (prompt.includes("azure devops") || prompt.includes("ado")) {
+        stream.progress("🔄 Fetching Azure DevOps data...");
+        const data = await fetchAzureDevOpsDataFromUrl(process.env.AZURE_ORG_URL + "/_apis/projects");
+        stream.markdown("### 🏗️ Projects\n```json\n" + JSON.stringify(data, null, 2) + "\n```");
+        return;
+      }
+
+      /* =======================================================
+         🪄 6️⃣ FALLBACK NORMAL COPILOT CHAT
+      ======================================================= */
+      stream.progress("Processing via fallback Copilot...");
+      const model = await getCopilotModel();
+      if (!model) {
+        stream.markdown("⚠️ No Copilot model available.");
+        return;
+      }
+      const response = await model.sendRequest(
+        [vscode.LanguageModelChatMessage.User(`${combinedContext}\n\n${request.prompt}`)],
+        {},
+        token
+      );
+      let text = "";
+      for await (const part of response.text) {text += part;}
+      stream.markdown(text);
+    } catch (err) {
+      console.error("❌ Chat participant error:", err);
+      stream.markdown(`Error: ${err}`);
     }
   };
 
@@ -416,28 +219,4 @@ Use functional components, semantic HTML, and realistic placeholder text.
   context.subscriptions.push(participant);
   console.log("✅ @snap chat participant registered successfully.");
   return participant;
-}
-
-/* ---------------------------------------------------------
-   🧩 Copilot Fallback Logic
---------------------------------------------------------- */
-async function processWithCopilot(
-  request: vscode.ChatRequest,
-  enhancedPrompt: string,
-  stream: vscode.ChatResponseStream,
-  token: vscode.CancellationToken,
-  chatContext: vscode.ChatContext
-) {
-  try {
-    const model = await getCopilotModel();
-    if (!model) {
-      stream.markdown("⚠️ No language model found. Please ensure GitHub Copilot Chat is installed.");
-      return;
-    }
-    const messages = [vscode.LanguageModelChatMessage.User(`${combinedContext}\n\n${enhancedPrompt}`)];
-    const response = await model.sendRequest(messages, {}, token);
-    for await (const fragment of response.text) stream.markdown(fragment);
-  } catch (err) {
-    stream.markdown(`⚠️ Error during fallback: ${err}`);
-  }
 }
