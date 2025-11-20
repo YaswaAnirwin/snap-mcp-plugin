@@ -1,101 +1,106 @@
 #!/usr/bin/env node
 /**
- * 🌍 Global Instructions MCP
- * ---------------------------------------------------------
- * Loads Figma / Azure DevOps / UI (Saffron) instruction files
- * dynamically from GitHub for all connected VS Code projects.
- * ---------------------------------------------------------
- * Author: Snap Automation Team
- * Version: 1.21.1
+ * 🌍 Global Instructions MCP (SDK 1.21.1 Compatible)
+ * Loads Figma / Azure DevOps / UI Instructions dynamically from GitHub.
  */
 
 import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 /* ---------------------------------------------------------
-   🌐 Global GitHub Repo Base URL
+   ESM FIX FOR __dirname
 --------------------------------------------------------- */
-const GITHUB_BASE =
-  "https://raw.githubusercontent.com/YaswaAnirwin/snap-mcp-plugin/main/.github";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /* ---------------------------------------------------------
-   🧠 Initialize MCP Server
+   GitHub Repo URLs
+--------------------------------------------------------- */
+const OWNER = "YaswaAnirwin";
+const REPO = "snap-mcp-plugin";
+const GITHUB_BASE = `https://raw.githubusercontent.com/${OWNER}/${REPO}/main/.github`;
+const GITHUB_API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/.github`;
+
+/* ---------------------------------------------------------
+   Initialize MCP Server (SDK 1.21.1 → singular "tool")
 --------------------------------------------------------- */
 const server = new Server(
   { name: "instructions-remote-mcp", version: "1.21.1" },
-  { capabilities: {} }
+  {
+    capabilities: {
+      tool: {},     // MUST be singular for SDK 1.21.1
+      sampling: {}
+    }
+  }
 );
+
 const transport = new StdioServerTransport();
 
 /* ---------------------------------------------------------
-   📄 Helper: Fetch Markdown from GitHub
+   Fetch Helpers
 --------------------------------------------------------- */
 async function fetchMarkdown(url) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.text();
   } catch (err) {
-    return `⚠️ Failed to fetch ${url}: ${err.message}`;
+    console.warn(`⚠️ Failed to fetch ${url}: ${err.message}`);
+    return "";
   }
 }
 
-/* ---------------------------------------------------------
-   📦 Helper: Load Instruction Set from GitHub
---------------------------------------------------------- */
-async function fetchInstructions(folder) {
-  let baseUrl = GITHUB_BASE;
-  if (folder) baseUrl += `/${folder}`;
+async function fetchAllMarkdownFromFolder(apiUrl) {
+  try {
+    const r = await fetch(apiUrl, { headers: { "User-Agent": "instructions-mcp" } });
+    if (!r.ok) throw new Error(`GitHub API ${r.status}`);
 
-  console.log(`🌐 Fetching instruction files from ${baseUrl}`);
+    const files = await r.json();
+    const mdFiles = files.filter((f) => f.name.endsWith(".md"));
 
-  const indexFiles = {
-    main: [
-      "copilot-instructions.md",
-      "figma-instructions.md",
-      "azure-devops.instructions.md"
-    ],
-    ui: [
-      "accordion.md",
-      "Button.md",
-      "Dropdown.md",
-      "TextInput.md",
-      "Tooltip.md"
-    ]
-  };
+    const results = [];
+    for (const file of mdFiles) {
+      console.log(`✅ Loaded: ${file.name}`);
+      const txt = await fetchMarkdown(file.download_url);
+      results.push(`\n\n# ${file.name}\n${txt}`);
+    }
 
-  const selected = folder === "instructions" ? indexFiles.ui : indexFiles.main;
-
-  const results = [];
-  for (const file of selected) {
-    const url = `${baseUrl}/${file}`;
-    const text = await fetchMarkdown(url);
-    results.push(`\n\n# ${file}\n${text}`);
-    console.log(`✅ Loaded: ${file}`);
+    return results.join("\n\n");
+  } catch (err) {
+    console.error("❌ Folder fetch error:", err.message);
+    return "";
   }
+}
 
-  return results.join("\n\n");
+async function fetchInstructions(folder = "") {
+  if (!folder) {
+    const root = await fetchAllMarkdownFromFolder(GITHUB_API);
+    const ui = await fetchAllMarkdownFromFolder(`${GITHUB_API}/instructions`);
+    return root + "\n\n" + ui;
+  }
+  return await fetchAllMarkdownFromFolder(`${GITHUB_API}/${folder}`);
 }
 
 /* ---------------------------------------------------------
-   🧩 Helper: Detect if workspace uses Saffron UI
+   Detect Saffron / EPAM UUI Projects
 --------------------------------------------------------- */
 async function isSaffronProject() {
   try {
     const workspace = process.cwd();
-    const pkgPaths = [
+    const pkgFiles = [
       path.join(workspace, "package.json"),
       path.join(workspace, "package-lock.json")
     ];
 
-    for (const p of pkgPaths) {
-      if (fs.existsSync(p)) {
-        const content = fs.readFileSync(p, "utf8");
-        if (content.includes("saffron") || content.includes("@epam/uui")) {
-          console.log(`🧩 Detected Saffron UI project via ${p}`);
+    for (const f of pkgFiles) {
+      if (fs.existsSync(f)) {
+        const txt = fs.readFileSync(f, "utf8");
+        if (txt.includes("saffron") || txt.includes("@epam/uui")) {
+          console.log("🧩 Saffron UI detected");
           return true;
         }
       }
@@ -107,128 +112,144 @@ async function isSaffronProject() {
 }
 
 /* ---------------------------------------------------------
-   🚀 Handle MCP Requests
+   Define Tools List
 --------------------------------------------------------- */
-transport.onRequest = async (req) => {
-  // --- List available tools ---
-  if (req.method === "tools/list") {
-    return {
-      tools: [
-        {
-          name: "getAllInstructions",
-          description: "Fetch all base instruction files from GitHub"
-        },
-        {
-          name: "getFigmaInstructions",
-          description: "Fetch figma-instructions.md from GitHub"
-        },
-        {
-          name: "getAzureDevOpsInstructions",
-          description: "Fetch azure-devops.instructions.md from GitHub"
-        },
-        {
-          name: "getUIComponentInstructions",
-          description: "Fetch all UI component docs from GitHub/.github/instructions/"
-        },
-        {
-          name: "detectAndLoadInstructions",
-          description:
-            "Detects query type (Figma, ADO, UI/Saffron) and fetches appropriate files from GitHub"
-        }
-      ]
-    };
-  }
-
-  // --- Tool calls ---
-  if (req.method === "tools/call") {
-    const tool = req.params?.name;
-    const args = req.params?.arguments || {};
-    console.log(`📥 Tool called: ${tool}`);
-
-    switch (tool) {
-      case "getAllInstructions": {
-        const text = await fetchInstructions("");
-        return { content: [{ type: "text", text }] };
-      }
-
-      case "getFigmaInstructions": {
-        const text = await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`);
-        return { content: [{ type: "text", text }] };
-      }
-
-      case "getAzureDevOpsInstructions": {
-        const text = await fetchMarkdown(`${GITHUB_BASE}/azure-devops.instructions.md`);
-        return { content: [{ type: "text", text }] };
-      }
-
-      case "getUIComponentInstructions": {
-        const text = await fetchInstructions("instructions");
-        return { content: [{ type: "text", text }] };
-      }
-
-      case "detectAndLoadInstructions": {
-        const query = (args.query || "").toLowerCase();
-
-        // 🧠 Detect Figma
-        if (query.includes("figma.com")) {
-          const text = await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`);
-          return { content: [{ type: "text", text }] };
-        }
-
-        // 🧠 Detect Azure DevOps / PBI
-        if (query.includes("dev.azure.com") || query.includes("pbi")) {
-          const text = await fetchMarkdown(`${GITHUB_BASE}/azure-devops.instructions.md`);
-          return { content: [{ type: "text", text }] };
-        }
-
-        // 🧠 Detect Saffron/React/UI Projects
-        if (
-          (await isSaffronProject()) ||
-          query.includes("react") ||
-          query.includes("ui") ||
-          query.includes("saffron")
-        ) {
-          const text = await fetchInstructions("instructions");
-          return { content: [{ type: "text", text }] };
-        }
-
-        // ⚠️ Default Fallback
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                "⚠️ Could not detect context — please include a Figma, ADO, or UI keyword."
-            }
-          ]
-        };
-      }
-
-      default:
-        return {
-          content: [{ type: "text", text: `❌ Unknown tool: ${tool}` }]
-        };
+const toolList = [
+  {
+    name: "getAllInstructions",
+    description: "Fetch all instruction files.",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "getFigmaInstructions",
+    description: "Fetch figma-instructions.md",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "getAzureDevOpsInstructions",
+    description: "Fetch azure-devops.instructions.md",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "getUIComponentInstructions",
+    description: "Fetch UI component docs",
+    inputSchema: { type: "object", properties: {} }
+  },
+  {
+    name: "detectAndLoadInstructions",
+    description: "Auto-detect & load instructions",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } }
     }
   }
+];
 
-  return null;
+/* ---------------------------------------------------------
+   Main Request Handler
+--------------------------------------------------------- */
+transport.onRequest = async (req) => {
+  try {
+    /* 1) initialize */
+    if (req.method === "initialize") {
+      console.log("⚙️ initialize received");
+
+      return {
+        protocolVersion: "1.0",
+        capabilities: {
+          tool: {},    // must match constructor
+          sampling: {}
+        }
+      };
+    }
+
+    /* 2) initialized */
+    if (req.method === "initialized") {
+      console.log("🔄 initialized acknowledged");
+      return {};
+    }
+
+    /* 3) tools/list */
+    if (req.method === "tools/list") {
+      console.log("🧰 tools/list received");
+      return { tools: toolList };
+    }
+
+    /* 4) tools/call */
+    if (req.method === "tools/call") {
+      const tool = req.params?.name;
+      const args = req.params?.arguments || {};
+
+      console.log(`📥 tools/call → ${tool}`);
+
+      switch (tool) {
+        case "getAllInstructions":
+          return { content: [{ type: "text", text: await fetchInstructions("") }] };
+
+        case "getFigmaInstructions":
+          return {
+            content: [
+              { type: "text", text: await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`) }
+            ]
+          };
+
+        case "getAzureDevOpsInstructions":
+          return {
+            content: [
+              { type: "text", text: await fetchMarkdown(`${GITHUB_BASE}/azure-devops.instructions.md`) }
+            ]
+          };
+
+        case "getUIComponentInstructions":
+          return { content: [{ type: "text", text: await fetchInstructions("instructions") }] };
+
+        case "detectAndLoadInstructions":
+          const query = (args.query || "").toLowerCase();
+
+          if (query.includes("figma.com"))
+            return { content: [{ type: "text", text: await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`) }] };
+
+          if (query.includes("dev.azure.com") || query.includes("pbi"))
+            return { content: [{ type: "text", text: await fetchMarkdown(`${GITHUB_BASE}/azure-devops.instructions.md`) }] };
+
+          if (
+            (await isSaffronProject()) ||
+            query.includes("react") ||
+            query.includes("ui") ||
+            query.includes("saffron")
+          )
+            return { content: [{ type: "text", text: await fetchInstructions("instructions") }] };
+
+          return { content: [{ type: "text", text: "⚠️ Could not detect context." }] };
+
+        default:
+          return {
+            content: [{ type: "text", text: `❌ Unknown tool: ${tool}` }]
+          };
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error("❌ MCP handler error:", err);
+    return {
+      content: [{ type: "text", text: `❌ Internal MCP error: ${err.message}` }]
+    };
+  }
 };
 
 /* ---------------------------------------------------------
-   🧪 Standalone Mode
+   Standalone Debug Mode
 --------------------------------------------------------- */
-const isMain =
-  import.meta.url.replace("file:///", "").replace(/\//g, "\\") === process.argv[1];
-
-if (isMain) {
-  console.log("🧪 Running MCP standalone test...");
-  const text = await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`);
-  console.log("✅ Sample fetched from GitHub:");
-  console.log(text.substring(0, 200));
+const isMain = process.argv[1]?.includes("instructions-remote-mcp.mjs");
+if (isMain && !process.env.VSCODE_PID) {
+  console.log("🧪 Standalone test...");
+  const txt = await fetchMarkdown(`${GITHUB_BASE}/figma-instructions.md`);
+  console.log(txt.substring(0, 200));
 }
 
 /* ---------------------------------------------------------
-   🚀 Start MCP Server
+   Start MCP Server
 --------------------------------------------------------- */
 await server.connect(transport);
-console.log("✅ Global instructions-remote-mcp running — serving files from GitHub.");
+console.error("✅ Global instructions-remote-mcp running — ready with 5 tools.");
